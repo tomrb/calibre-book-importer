@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text.Json;
 using System.Text;
 using System.Text.RegularExpressions;
 
@@ -8,7 +9,8 @@ public sealed record SourceBook(
     string Title,
     string Author,
     IReadOnlyList<string> SourcePaths,
-    string PreferredPath)
+    string PreferredPath,
+    BookMetadata? Metadata = null)
 {
     public string PreferredFormat => Path.GetExtension(PreferredPath).TrimStart('.').ToLowerInvariant();
 }
@@ -22,12 +24,58 @@ public sealed record LibraryBook(
 public sealed record BookAction(
     string Title,
     string Author,
-    string SourcePath,
-    string Format,
     string Status,
+    string Format,
+    string Source,
     string? LibraryId = null,
     string? OutputPath = null,
-    string Reason = "");
+    string Reason = "",
+    IReadOnlyList<string>? ExistingFormats = null);
+
+public sealed class BookMetadata
+{
+    public string Title { get; set; } = "";
+    public List<string> Authors { get; set; } = [];
+    public string Description { get; set; } = "";
+    public List<string> Subjects { get; set; } = [];
+    public string Publisher { get; set; } = "";
+    public string Published { get; set; } = "";
+    public List<string> Isbns { get; set; } = [];
+    public List<string> Languages { get; set; } = [];
+    public string Series { get; set; } = "";
+    public string SeriesIndex { get; set; } = "";
+    public string CoverUrl { get; set; } = "";
+    public string CoverPath { get; set; } = "";
+    public string SourceUrl { get; set; } = "";
+
+    public string AuthorText => string.Join(" & ", Authors);
+
+    public static IReadOnlyList<BookMetadata> ReadFile(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return [];
+        }
+        var fullPath = Path.GetFullPath(path);
+        if (!File.Exists(fullPath))
+        {
+            throw new FileNotFoundException($"Metadata file not found: {fullPath}", fullPath);
+        }
+        var books = JsonSerializer.Deserialize<List<BookMetadata>>(
+                        File.ReadAllText(fullPath),
+                        new JsonSerializerOptions(JsonSerializerDefaults.Web)) ?? [];
+        if (books.Any(book => string.IsNullOrWhiteSpace(book.Title) || book.Authors.Count == 0))
+        {
+            throw new ArgumentException("Every metadata entry must include a title and at least one author.");
+        }
+        if (books.GroupBy(book => BookMatching.Normalize(book.Title), StringComparer.Ordinal)
+            .Any(group => group.Count() > 1))
+        {
+            throw new ArgumentException("Metadata file contains duplicate normalized titles.");
+        }
+        return books;
+    }
+}
 
 public sealed record CatalogBook(
     string Id,
@@ -130,6 +178,33 @@ public static partial class BookMatching
         }).ToArray();
     }
 
+    public static LibraryMatch ResolveExactMatch(
+        IEnumerable<LibraryBook> records,
+        string title,
+        string? author)
+    {
+        var titleKey = Normalize(SanitizeTitle(title));
+        var titleMatches = records.Where(record =>
+            Normalize(SanitizeTitle(record.Title)) == titleKey).ToArray();
+        if (titleMatches.Length == 0)
+        {
+            return new LibraryMatch("missing", null, "No exact normalized title match exists in the Calibre library.");
+        }
+        if (string.IsNullOrWhiteSpace(author))
+        {
+            return new LibraryMatch("ambiguous", null, "The author is missing; refusing to guess which Calibre book matches.");
+        }
+        var authorKey = NormalizeAuthor(author);
+        var authorMatches = titleMatches.Where(record =>
+            NormalizeAuthor(record.Authors) == authorKey).ToArray();
+        return authorMatches.Length switch
+        {
+            1 => new LibraryMatch("already_in_calibre", authorMatches[0], "Exact normalized title and author match."),
+            > 1 => new LibraryMatch("ambiguous", null, "Multiple Calibre books have the same title and author."),
+            _ => new LibraryMatch("ambiguous", null, "A title match exists, but its author does not match exactly.")
+        };
+    }
+
     public static string PreferredFile(IEnumerable<string> paths) =>
         paths.OrderBy(path => FormatPreference.GetValueOrDefault(Path.GetExtension(path), 99))
             .ThenBy(path => path, StringComparer.OrdinalIgnoreCase)
@@ -147,6 +222,8 @@ public static partial class BookMatching
     [GeneratedRegex(@"\s+\[[^\]]+\]$", RegexOptions.CultureInvariant)]
     private static partial Regex AuthorSuffixRegex();
 }
+
+public sealed record LibraryMatch(string Status, LibraryBook? Record, string Reason);
 
 internal static class StringExtensions
 {

@@ -54,6 +54,45 @@ public sealed class BookMatchingTests
     }
 
     [Fact]
+    public void ResolveExactMatchRequiresExactNormalizedTitleAndAuthor()
+    {
+        var records = new[]
+        {
+            new LibraryBook("1", "Honor of the Queen", "David Weber", ["EPUB"]),
+            new LibraryBook("2", "Honor of the Queen", "Other Author", ["PDF"])
+        };
+
+        var match = BookMatching.ResolveExactMatch(records, "Honor_of_the_Queen (ebook)", "David Weber");
+        var mismatch = BookMatching.ResolveExactMatch(records, "Honor of the Queen", "Another Author");
+        var partialTitle = BookMatching.ResolveExactMatch(records, "The Honor of the Queen", "David Weber");
+
+        Assert.Equal("already_in_calibre", match.Status);
+        Assert.Equal("1", match.Record?.Id);
+        Assert.Equal("ambiguous", mismatch.Status);
+        Assert.Equal("missing", partialTitle.Status);
+    }
+
+    [Fact]
+    public void ReadMetadataFileRejectsDuplicateNormalizedTitles()
+    {
+        var path = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".json");
+        File.WriteAllText(path, """
+            [
+              { "title": "Honor of the Queen", "authors": ["David Weber"] },
+              { "title": "Honor_of_the_Queen", "authors": ["David Weber"] }
+            ]
+            """);
+        try
+        {
+            Assert.Throws<ArgumentException>(() => BookMetadata.ReadFile(path));
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
     public void ParseLibraryListingReadsMachineReadableRecords()
     {
         const string listing = """
@@ -91,6 +130,29 @@ public sealed class BookMatchingTests
             Assert.Equal("A Book", book.Title);
             Assert.Equal("epub", book.PreferredFormat);
             Assert.Equal(2, book.SourcePaths.Count);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void ScanDoesNotMatchSelectedTitlesByFilenameSubstring()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        try
+        {
+            File.WriteAllText(Path.Combine(directory, "The Honor of the Queen.epub"), "epub");
+            var metadata = new[]
+            {
+                new BookMetadata { Title = "Honor of the Queen", Authors = ["David Weber"] }
+            };
+
+            var books = CalibreImporter.Scan(directory, selectedBooks: metadata);
+
+            Assert.Empty(books);
         }
         finally
         {

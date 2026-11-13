@@ -42,18 +42,35 @@ Compare selected titles against a Calibre library without importing:
 dotnet run --project src\CalibreBookImporter\CalibreBookImporter.csproj -- compare --source-dir "C:\Users\tombe\OneDrive\eBooks" --library-path "E:\Library" --title "On Basilisk Station"
 ```
 
-Import a selected title; conversion is opt-in:
+Plan an import without writing to Calibre. Imports default to EPUB and AZW3, converting missing formats to temporary files:
 
 ```powershell
-dotnet run --project src\CalibreBookImporter\CalibreBookImporter.csproj -- import --source-dir "C:\Users\tombe\OneDrive\eBooks" --library-path "E:\Library" --title "On Basilisk Station" --target-format azw3 --convert-when-needed
+dotnet run --project src\CalibreBookImporter\CalibreBookImporter.csproj -- import --source-dir "C:\Users\tombe\OneDrive\eBooks" --library-path "E:\Library" --title "On Basilisk Station" --dry-run
 ```
 
-Search and scan output are JSON. Compare and import report per-title statuses, including existing Calibre records, ambiguous matches, failures, and import outcomes.
+Use `--metadata-file` with a JSON array containing selected titles, authors, and any verified metadata. `compare`, `scan`, `import`, and `update` accept this option; it also filters source filename scanning. `--target-format` can be repeated. `--no-convert` skips formats without a matching source file. Imports skip existing records by default.
+
+After reviewing a dry-run, perform the import by omitting `--dry-run`. To update formats and metadata on an exact existing title-and-author match, use `update`. To fully replace an existing record, explicitly use `import --replace-existing`; this exports a backup, removes the old record, adds the selected book and formats, and restores the backup if replacement fails. Replacement is not permitted with `update`.
+
+The standalone conversion command is `convert --source-file FILE [--target-format FORMAT] [--output-file FILE]`. Without `--output-file`, conversion writes to a new temporary-directory path and never overwrites the source.
+
+Search and scan output are JSON. Compare and import report per-title statuses, including exact Calibre matches, existing formats, ambiguous matches, failures, and import outcomes.
+
+## Install for GitHub Copilot
+
+From the repository root, run:
+
+```powershell
+.\scripts\Install-CalibreCopilotSkill.ps1
+```
+
+The installer publishes the .NET helper to `%APPDATA%\com.github.githubapp\calibre-book-importer` and installs the repository's `calibre-ebook-workflow` skill under the app's `app-skills` directory. Existing installations are retained as timestamped backups.
 
 ## Safety
 
 - Source ebooks are never moved, renamed, or overwritten.
-- Existing Calibre titles are skipped rather than replaced.
+- Existing Calibre titles are skipped by default; exact title-and-author matching is required for updates or replacements.
+- Replacement exports a full-record backup and attempts restoration after a failed operation.
 - Conversion output is written to a new path and never overwrites an existing file.
 - Calibre errors are reported rather than treated as an empty library.
 

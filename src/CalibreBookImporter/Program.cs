@@ -46,7 +46,7 @@ internal static class Program
         }
 
         var command = arguments[0].ToLowerInvariant();
-        if (command is not ("search" or "scan" or "compare" or "import"))
+        if (command is not ("search" or "scan" or "compare" or "import" or "update" or "convert"))
         {
             throw new ArgumentException($"Unknown command: {command}");
         }
@@ -75,39 +75,70 @@ internal static class Program
                 }
             case "scan":
                 {
+                    var metadata = BookMetadata.ReadFile(options.GetSingle("metadata-file"));
                     var books = CalibreImporter.Scan(
                         Required(options, "source-dir"),
-                        options.GetValues("title"),
-                        calibreDirectory);
+                        options.GetValues("title").Count > 0
+                            ? options.GetValues("title")
+                            : metadata.Select(book => book.Title),
+                        calibreDirectory,
+                        metadata);
                     WriteJson(books);
                     return 0;
                 }
             case "compare":
                 {
+                    var metadata = BookMetadata.ReadFile(options.GetSingle("metadata-file"));
                     var actions = new CalibreImporter(calibreDirectory).Compare(
                         Required(options, "source-dir"),
                         Required(options, "library-path"),
-                        options.GetValues("title"));
+                        options.GetValues("title").Count > 0
+                            ? options.GetValues("title")
+                            : metadata.Select(book => book.Title),
+                        metadata);
                     WriteJson(actions);
-                    return actions.Any(action => action.Status is "ambiguous" or "source_not_found") ? 1 : 0;
+                    return HasFailures(actions) ? 1 : 0;
                 }
             case "import":
+            case "update":
                 {
                     var titles = options.GetValues("title");
+                    var metadata = BookMetadata.ReadFile(options.GetSingle("metadata-file"));
                     if (titles.Count == 0)
                     {
-                        throw new ArgumentException("Select at least one book with --title before importing.");
+                        titles = metadata.Select(book => book.Title).ToArray();
+                    }
+                    if (titles.Count == 0)
+                    {
+                        throw new ArgumentException(
+                            "Select at least one book with --title or --metadata-file before importing or updating.");
                     }
 
+                    IReadOnlyList<string> targetFormats = options.GetValues("target-format").Count > 0
+                        ? options.GetValues("target-format")
+                        : ["epub", "azw3"];
                     var actions = new CalibreImporter(calibreDirectory).Import(
                         Required(options, "source-dir"),
                         Required(options, "library-path"),
                         titles,
-                        options.GetSingle("target-format") ?? "azw3",
-                        options.ContainsKey("convert-when-needed"));
+                        targetFormats,
+                        convertWhenNeeded: !options.ContainsKey("no-convert"),
+                        dryRun: options.ContainsKey("dry-run"),
+                        updateOnly: command == "update",
+                        replaceExisting: options.ContainsKey("replace-existing"),
+                        selectedBooks: metadata);
                     WriteJson(actions);
                     PrintSummary(actions);
-                    return actions.Any(action => action.Status == "failed") ? 1 : 0;
+                    return HasFailures(actions) ? 1 : 0;
+                }
+            case "convert":
+                {
+                    var output = new CalibreImporter(calibreDirectory).Convert(
+                        Required(options, "source-file"),
+                        options.GetSingle("target-format") ?? "azw3",
+                        options.GetSingle("output-file"));
+                    WriteJson(new { status = "converted", output });
+                    return 0;
                 }
             default:
                 throw new InvalidOperationException("Command validation failed.");
@@ -117,7 +148,9 @@ internal static class Program
     private static Dictionary<string, List<string>> ParseOptions(IEnumerable<string> arguments)
     {
         var options = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
-        var flags = new HashSet<string>(["convert-when-needed"], StringComparer.OrdinalIgnoreCase);
+        var flags = new HashSet<string>(
+            ["dry-run", "no-convert", "replace-existing"],
+            StringComparer.OrdinalIgnoreCase);
         using var enumerator = arguments.GetEnumerator();
         while (enumerator.MoveNext())
         {
@@ -156,11 +189,16 @@ internal static class Program
             "search" => new HashSet<string>(
                 ["query", "title", "author", "genre", "subject", "keywords", "limit"],
                 StringComparer.OrdinalIgnoreCase),
-            "scan" => new HashSet<string>(["source-dir", "title"], StringComparer.OrdinalIgnoreCase),
+            "scan" => new HashSet<string>(
+                ["source-dir", "title", "metadata-file"], StringComparer.OrdinalIgnoreCase),
             "compare" => new HashSet<string>(
-                ["source-dir", "library-path", "title"], StringComparer.OrdinalIgnoreCase),
-            "import" => new HashSet<string>(
-                ["source-dir", "library-path", "title", "target-format", "convert-when-needed"],
+                ["source-dir", "library-path", "title", "metadata-file"], StringComparer.OrdinalIgnoreCase),
+            "import" or "update" => new HashSet<string>(
+                ["source-dir", "library-path", "title", "target-format", "metadata-file",
+                    "dry-run", "no-convert", "replace-existing"],
+                StringComparer.OrdinalIgnoreCase),
+            "convert" => new HashSet<string>(
+                ["source-file", "target-format", "output-file"],
                 StringComparer.OrdinalIgnoreCase),
             _ => []
         };
@@ -225,9 +263,12 @@ internal static class Program
         Console.WriteLine();
         foreach (var (label, count) in new[]
                  {
-                     ("FOUND IN SOURCE", actions.Count(action => action.Status is "skipped" or "failed")),
+                     ("PLANNED / FOUND IN SOURCE", actions.Count(action =>
+                         action.Status is "skipped" or "failed" or "would_add" or "would_update" or "would_replace")),
                      ("ALREADY IN CALIBRE", actions.Count(action => action.Status == "already_in_calibre")),
                      ("IMPORTED", actions.Count(action => action.Status == "imported")),
+                     ("FORMATS ADDED", actions.Count(action => action.Status == "format_added")),
+                     ("REPLACED", actions.Count(action => action.Status == "replaced")),
                      ("NOT FOUND", actions.Count(action => action.Status == "missing")),
                      ("AMBIGUOUS / NEEDS REVIEW", actions.Count(action => action.Status == "ambiguous"))
                  })
@@ -236,6 +277,10 @@ internal static class Program
         }
     }
 
+    private static bool HasFailures(IEnumerable<BookAction> actions) =>
+        actions.Any(action => action.Status is "failed" or "ambiguous" or "source_not_found" or
+            "missing" or "not_in_library");
+
     private static void PrintUsage()
     {
         Console.WriteLine("""
@@ -243,13 +288,17 @@ internal static class Program
 
             Usage:
               calibre-book-importer [--calibre-dir DIR] search --query QUERY [--limit N]
-              calibre-book-importer [--calibre-dir DIR] scan --source-dir DIR [--title TITLE]
+              calibre-book-importer [--calibre-dir DIR] scan --source-dir DIR [--title TITLE] [--metadata-file FILE]
               calibre-book-importer [--calibre-dir DIR] compare --source-dir DIR --library-path DIR [--title TITLE]
-              calibre-book-importer [--calibre-dir DIR] import --source-dir DIR --library-path DIR --title TITLE
-                  [--target-format FORMAT] [--convert-when-needed]
+                  [--metadata-file FILE]
+              calibre-book-importer [--calibre-dir DIR] import|update --source-dir DIR --library-path DIR
+                  [--title TITLE] [--metadata-file FILE] [--target-format FORMAT] [--dry-run]
+                  [--no-convert] [--replace-existing]
+              calibre-book-importer [--calibre-dir DIR] convert --source-file FILE [--target-format FORMAT]
+                  [--output-file FILE]
 
             Search queries Open Library by title, author, subject, genre, or keywords.
-            Imports skip existing Calibre records and never overwrite source files.
+            Imports skip existing Calibre records by default and never overwrite source files.
             """);
     }
 }
