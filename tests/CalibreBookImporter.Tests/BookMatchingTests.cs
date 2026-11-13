@@ -122,7 +122,9 @@ public sealed class BookMatchingTests
         try
         {
             File.WriteAllText(Path.Combine(directory, "A Book.pdf"), "pdf");
-            File.WriteAllText(Path.Combine(directory, "A Book.epub"), "epub");
+            var nestedDirectory = Path.Combine(directory, "author", "series");
+            Directory.CreateDirectory(nestedDirectory);
+            File.WriteAllText(Path.Combine(nestedDirectory, "A Book.epub"), "epub");
 
             var books = CalibreImporter.Scan(directory);
 
