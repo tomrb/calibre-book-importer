@@ -1,93 +1,61 @@
 # Calibre Book Importer
 
-A reusable toolkit for scanning a source ebook directory, comparing discovered books against an existing Calibre library, and adding only the missing formats or books while preserving the originals.
+A .NET 10 command-line application and Visual Studio solution for searching Open Library, scanning ebook folders, comparing books with a Calibre library, and importing books without overwriting source files.
 
-This project was designed around the same safety model used for the Honor Harrington import workflow:
+## Requirements
 
-- never overwrite the original source files
-- never replace existing Calibre entries without explicit opt-in
-- prefer EPUB as the source for AZW3 conversion when available
-- skip ambiguous title matches instead of guessing
-- add only missing titles or missing formats
+- .NET 10 SDK (Visual Studio 2026 supports the solution)
+- Calibre command-line tools for library comparison and importing: `calibredb`; `ebook-meta` and `ebook-convert` are used when available or required
 
-## Features
-
-- recursive source directory scans
-- supported formats: EPUB, MOBI, AZW3, PDF, LIT, HTML, RTF
-- title/author normalization for imperfect or inconsistent filenames
-- Calibre library detection via `calibredb`
-- duplicate detection against the existing library
-- conversion management to AZW3
-- format attachment using `calibredb add_format`
-- reporting for Found / Already in Calibre / Imported / Not Found / Ambiguous
-
-## Quick start
-
-Install the CLI in editable mode:
+## Build and test
 
 ```powershell
-py -m pip install -e .
+dotnet build CalibreBookImporter.sln
+dotnet test CalibreBookImporter.sln
 ```
 
-Then run a source scan:
+Run commands from the repository root with:
 
 ```powershell
-calibre-book-importer scan --source-dir "C:\Users\tombe\OneDrive\eBooks" --library-path "E:\Library"
+dotnet run --project src\CalibreBookImporter\CalibreBookImporter.csproj -- <command> [options]
 ```
 
-Compare against the library without importing:
+Add `--calibre-dir "C:\Program Files\Calibre2"` before the command when Calibre is not on `PATH`.
+
+## Commands
+
+Search the Open Library catalog:
 
 ```powershell
-calibre-book-importer compare --source-dir "C:\Users\tombe\OneDrive\eBooks" --library-path "E:\Library" --title "On Basilisk Station" --author "David Weber"
+dotnet run --project src\CalibreBookImporter\CalibreBookImporter.csproj -- search --query "Honor Harrington" --limit 20
 ```
 
-Import or attach missing AZW3 versions for detected books:
+Scan a source collection:
 
 ```powershell
-calibre-book-importer import --source-dir "C:\Users\tombe\OneDrive\eBooks" --library-path "E:\Library" --title "On Basilisk Station" --author "David Weber" --target-format azw3 --convert-when-needed
+dotnet run --project src\CalibreBookImporter\CalibreBookImporter.csproj -- scan --source-dir "C:\Users\tombe\OneDrive\eBooks"
 ```
 
-## Typical workflow
+Compare selected titles against a Calibre library without importing:
 
-1. Scan the source tree.
-2. Group files by normalized title and format.
-3. Compare against the existing Calibre library.
-4. Skip any title already present.
-5. Prefer EPUB when available; otherwise choose the cleanest readable source file.
-6. Convert only when needed.
-7. Attach the resulting format using `calibredb add_format`.
-8. Verify the library again.
-
-## Safety rules built in
-
-- no source file is moved, renamed, or overwritten
-- no duplicate Calibre logical books are created
-- ambiguous matches stop before making changes
-- conversion happens only after a title is confirmed missing
-
-## Calibre tool assumptions
-
-This project uses Calibre’s command-line tools:
-
-- calibredb.exe
-- ebook-convert.exe
-- ebook-meta.exe
-
-The default Windows install path is:
-
-```text
-C:\Program Files\Calibre2\
+```powershell
+dotnet run --project src\CalibreBookImporter\CalibreBookImporter.csproj -- compare --source-dir "C:\Users\tombe\OneDrive\eBooks" --library-path "E:\Library" --title "On Basilisk Station"
 ```
 
-## Example report
+Import a selected title; conversion is opt-in:
 
-```text
-FOUND IN SOURCE: 12
-ALREADY IN CALIBRE: 0
-IMPORTED: 12
-NOT FOUND: 3
-AMBIGUOUS / NEEDS REVIEW: 0
+```powershell
+dotnet run --project src\CalibreBookImporter\CalibreBookImporter.csproj -- import --source-dir "C:\Users\tombe\OneDrive\eBooks" --library-path "E:\Library" --title "On Basilisk Station" --target-format azw3 --convert-when-needed
 ```
+
+Search and scan output are JSON. Compare and import report per-title statuses, including existing Calibre records, ambiguous matches, failures, and import outcomes.
+
+## Safety
+
+- Source ebooks are never moved, renamed, or overwritten.
+- Existing Calibre titles are skipped rather than replaced.
+- Conversion output is written to a new path and never overwrites an existing file.
+- Calibre errors are reported rather than treated as an empty library.
 
 ## License
 

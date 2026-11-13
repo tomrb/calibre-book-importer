@@ -1,0 +1,100 @@
+using CalibreBookImporter;
+
+namespace CalibreBookImporter.Tests;
+
+public sealed class BookMatchingTests
+{
+    [Theory]
+    [InlineData("  Honor_of-the-Queen (EPUB) ", "honor of the queen")]
+    [InlineData("L'Étranger", "l etranger")]
+    public void NormalizeRemovesFilenameNoiseAndDiacritics(string input, string expected)
+    {
+        Assert.Equal(expected, BookMatching.Normalize(BookMatching.SanitizeTitle(input)));
+    }
+
+    [Fact]
+    public void PreferredFileChoosesEpubBeforeOtherFormats()
+    {
+        var paths = new[]
+        {
+            @"C:\Books\Honor of the Queen.pdf",
+            @"C:\Books\Honor of the Queen.azw3",
+            @"C:\Books\Honor of the Queen.epub"
+        };
+
+        Assert.Equal(paths[2], BookMatching.PreferredFile(paths));
+    }
+
+    [Fact]
+    public void FindMatchingLibraryBooksUsesNormalizedTitleAndAuthor()
+    {
+        var records = new[]
+        {
+            new LibraryBook("1", "Honor of the Queen", "David Weber", ["EPUB"]),
+            new LibraryBook("2", "Honor of the Queen", "Other Author", ["PDF"])
+        };
+
+        var matches = BookMatching.FindMatchingLibraryBooks(records, "Honor_of_the_Queen (ebook)", "David Weber");
+
+        Assert.Single(matches);
+        Assert.Equal("1", matches[0].Id);
+    }
+
+    [Fact]
+    public void FindMatchingLibraryBooksRetainsPossiblePartialTitleMatches()
+    {
+        var records = new[]
+        {
+            new LibraryBook("1", "The Honor of the Queen", "David Weber", ["EPUB"])
+        };
+
+        var matches = BookMatching.FindMatchingLibraryBooks(records, "Honor of the Queen", "David Weber");
+
+        Assert.Single(matches);
+    }
+
+    [Fact]
+    public void ParseLibraryListingReadsMachineReadableRecords()
+    {
+        const string listing = """
+            [
+              {
+                "id": 42,
+                "title": "Book title",
+                "authors": "Author",
+                "formats": ["/library/Book title.epub", "/library/Book title.pdf"]
+              }
+            ]
+            """;
+
+        var book = Assert.Single(CalibreImporter.ParseLibraryListing(listing));
+
+        Assert.Equal("42", book.Id);
+        Assert.Equal("Book title", book.Title);
+        Assert.Equal("Author", book.Authors);
+        Assert.Equal(["EPUB", "PDF"], book.Formats);
+    }
+
+    [Fact]
+    public void ScanGroupsAvailableFormatsAndPrefersEpub()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        try
+        {
+            File.WriteAllText(Path.Combine(directory, "A Book.pdf"), "pdf");
+            File.WriteAllText(Path.Combine(directory, "A Book.epub"), "epub");
+
+            var books = CalibreImporter.Scan(directory);
+
+            var book = Assert.Single(books);
+            Assert.Equal("A Book", book.Title);
+            Assert.Equal("epub", book.PreferredFormat);
+            Assert.Equal(2, book.SourcePaths.Count);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+}
