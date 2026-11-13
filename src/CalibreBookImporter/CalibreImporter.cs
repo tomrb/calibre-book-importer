@@ -22,7 +22,8 @@ public sealed class CalibreImporter
         string sourceDirectory,
         IEnumerable<string>? requestedTitles = null,
         string? calibreDirectory = null,
-        IReadOnlyList<BookMetadata>? selectedBooks = null)
+        IReadOnlyList<BookMetadata>? selectedBooks = null,
+        IEnumerable<string>? requestedAuthors = null)
     {
         var root = Path.GetFullPath(sourceDirectory);
         if (!Directory.Exists(root))
@@ -38,6 +39,10 @@ public sealed class CalibreImporter
         var requested = (requestedInput is { Length: > 0 }
                 ? requestedInput
                 : selected.Select(book => BookMatching.Normalize(book.Title)))
+            .ToArray();
+        var requestedAuthorsNormalized = (requestedAuthors ?? [])
+            .Select(BookMatching.Normalize)
+            .Where(value => value.Length > 0)
             .ToArray();
         string? ebookMeta = null;
         try
@@ -57,33 +62,62 @@ public sealed class CalibreImporter
                      .Where(path => SupportedExtensions.Contains(Path.GetExtension(path), StringComparer.OrdinalIgnoreCase))
                      .Order(StringComparer.OrdinalIgnoreCase))
         {
-            var fileNameKey = BookMatching.Normalize(
-                BookMatching.SanitizeTitle(Path.GetFileNameWithoutExtension(path)));
+            var relativePathKey = BookMatching.Normalize(
+                BookMatching.SanitizeTitle(Path.GetRelativePath(root, path)));
+            var titleCandidates = selected
+                .Where(book => BookMatching.ContainsSearchTerm(relativePathKey, book.Title))
+                .ToArray();
+            var authorCandidates = selected
+                .Where(book => book.Authors.Any(author =>
+                    BookMatching.ContainsSearchTerm(relativePathKey, author)))
+                .ToArray();
             BookMetadata? metadata = null;
+            var possibleMatch = false;
             if (selected.Length > 0)
             {
-                metadata = selected
-                    .FirstOrDefault(book => fileNameKey == BookMatching.Normalize(book.Title));
-                if (metadata is null)
+                if (titleCandidates.Length == 0 && authorCandidates.Length == 0)
                 {
                     continue;
                 }
             }
-            else if (requested.Length > 0 && !requested.Contains(fileNameKey, StringComparer.Ordinal))
+            else if ((requested.Length > 0 || requestedAuthorsNormalized.Length > 0) &&
+                     !requested.Concat(requestedAuthorsNormalized).Any(term =>
+                         BookMatching.ContainsSearchTerm(relativePathKey, term)))
             {
                 continue;
             }
 
             var extracted = ReadMetadata(path, ebookMeta);
+            if (selected.Length > 0)
+            {
+                var extractedTitleKey = BookMatching.Normalize(
+                    BookMatching.SanitizeTitle(extracted.Title));
+                metadata = selected.FirstOrDefault(book =>
+                    extractedTitleKey == BookMatching.Normalize(book.Title) &&
+                    !string.IsNullOrWhiteSpace(extracted.Author) &&
+                    BookMatching.NormalizeAuthor(extracted.Author) ==
+                    BookMatching.NormalizeAuthor(book.AuthorText));
+
+                if (metadata is null && titleCandidates.Length == 1 &&
+                    extractedTitleKey == BookMatching.Normalize(titleCandidates[0].Title) &&
+                    (string.IsNullOrWhiteSpace(extracted.Author) ||
+                     BookMatching.NormalizeAuthor(extracted.Author) ==
+                     BookMatching.NormalizeAuthor(titleCandidates[0].AuthorText)))
+                {
+                    metadata = titleCandidates[0];
+                }
+
+                possibleMatch = metadata is null;
+            }
             var title = metadata?.Title ?? BookMatching.SanitizeTitle(extracted.Title);
             var author = metadata?.AuthorText ?? extracted.Author.Trim();
-            var key = BookMatching.BuildGroupKey(title, author);
+            var key = BookMatching.BuildGroupKey(title, author) + (possibleMatch ? "|possible" : "");
             if (!groups.TryGetValue(key, out var entries))
             {
                 entries = [];
                 groups.Add(key, entries);
             }
-            entries.Add(new SourceEntry(title, author, path, metadata));
+            entries.Add(new SourceEntry(title, author, path, metadata, possibleMatch));
         }
 
         return groups.Values.Select(entries =>
@@ -91,7 +125,8 @@ public sealed class CalibreImporter
                 var paths = entries.Select(entry => entry.Path).ToArray();
                 var preferred = BookMatching.PreferredFile(paths);
                 var first = entries[0];
-                return new SourceBook(first.Title, first.Author, paths, preferred, first.Metadata);
+                return new SourceBook(first.Title, first.Author, paths, preferred, first.Metadata,
+                    entries.Any(entry => entry.IsPossibleMatch));
             })
             .OrderBy(book => BookMatching.Normalize(book.Title), StringComparer.Ordinal)
             .ToArray();
@@ -109,6 +144,17 @@ public sealed class CalibreImporter
         var actions = new List<BookAction>();
         foreach (var book in books)
         {
+            if (book.IsPossibleMatch)
+            {
+                actions.Add(new BookAction(
+                    book.Title,
+                    book.Author,
+                    "possible_source_match",
+                    book.PreferredFormat,
+                    book.PreferredPath,
+                    Reason: "The path matched a selected title or author, but ebook metadata did not verify the exact selected book."));
+                continue;
+            }
             var match = ResolveMatch(library, book);
             actions.Add(new BookAction(
                 book.Title,
@@ -154,6 +200,17 @@ public sealed class CalibreImporter
 
         foreach (var book in books)
         {
+            if (book.IsPossibleMatch)
+            {
+                actions.Add(new BookAction(
+                    book.Title,
+                    book.Author,
+                    "possible_source_match",
+                    book.PreferredFormat,
+                    book.PreferredPath,
+                    Reason: "The path matched a selected title or author, but ebook metadata did not verify the exact selected book."));
+                continue;
+            }
             var match = ResolveMatch(library, book);
             var record = match.Record;
             if (match.Status == "ambiguous")
@@ -772,6 +829,11 @@ public sealed class CalibreImporter
                              values.GetValueOrDefault("Authors") ??
                              values.GetValueOrDefault("Author") ?? "";
                 author = Regex.Replace(author, @"\s+\[[^\]]+\]$", "").Trim();
+                if (author.Equals("Unknown", StringComparison.OrdinalIgnoreCase) ||
+                    author.Equals("Unknown author", StringComparison.OrdinalIgnoreCase))
+                {
+                    author = "";
+                }
                 return (string.IsNullOrWhiteSpace(title) ? Path.GetFileNameWithoutExtension(path) : title, author);
             }
         }
@@ -796,7 +858,10 @@ public sealed class CalibreImporter
         {
             return;
         }
-        var found = actions.Select(action => BookMatching.Normalize(action.Title)).ToHashSet(StringComparer.Ordinal);
+        var found = actions
+            .Where(action => action.Status != "possible_source_match")
+            .Select(action => BookMatching.Normalize(action.Title))
+            .ToHashSet(StringComparer.Ordinal);
         foreach (var metadata in selectedBooks.Where(book => !found.Contains(BookMatching.Normalize(book.Title))))
         {
             actions.Add(new BookAction(metadata.Title, metadata.AuthorText, "source_not_found", "",
@@ -852,7 +917,12 @@ public sealed class CalibreImporter
     private static string FirstNonEmpty(params string[] values) =>
         values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value))?.Trim() ?? "";
 
-    private sealed record SourceEntry(string Title, string Author, string Path, BookMetadata? Metadata);
+    private sealed record SourceEntry(
+        string Title,
+        string Author,
+        string Path,
+        BookMetadata? Metadata,
+        bool IsPossibleMatch);
     private sealed record PlannedFormat(string Format, string Path, int ActionIndex, bool Temporary);
     private sealed record FormatPlan(List<PlannedFormat> Files, List<BookAction> Actions);
 

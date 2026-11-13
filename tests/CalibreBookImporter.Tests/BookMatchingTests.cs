@@ -140,7 +140,7 @@ public sealed class BookMatchingTests
     }
 
     [Fact]
-    public void ScanDoesNotMatchSelectedTitlesByFilenameSubstring()
+    public void ScanSurfacesButDoesNotAutoMatchTitleSubstring()
     {
         var directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(directory);
@@ -154,7 +154,105 @@ public sealed class BookMatchingTests
 
             var books = CalibreImporter.Scan(directory, selectedBooks: metadata);
 
-            Assert.Empty(books);
+            var book = Assert.Single(books);
+            Assert.True(book.IsPossibleMatch);
+            Assert.Equal(Path.Combine(directory, "The Honor of the Queen.epub"), book.PreferredPath);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void ScanSearchesNestedPathsForSelectedAuthor()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+        var authorDirectory = Path.Combine(directory, "David Weber", "Honor Harrington");
+        Directory.CreateDirectory(authorDirectory);
+        try
+        {
+            var path = Path.Combine(authorDirectory, "unknown-name.epub");
+            File.WriteAllText(path, "epub");
+            var metadata = new[]
+            {
+                new BookMetadata { Title = "On Basilisk Station", Authors = ["David Weber"] }
+            };
+
+            var book = Assert.Single(CalibreImporter.Scan(directory, selectedBooks: metadata));
+
+            Assert.True(book.IsPossibleMatch);
+            Assert.Equal(path, book.PreferredPath);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void ScanCanSearchByAuthorWithoutSelectedMetadata()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+        var authorDirectory = Path.Combine(directory, "David Weber", "Honor Harrington");
+        Directory.CreateDirectory(authorDirectory);
+        try
+        {
+            var path = Path.Combine(authorDirectory, "unknown-name.epub");
+            File.WriteAllText(path, "epub");
+
+            var book = Assert.Single(CalibreImporter.Scan(directory, requestedAuthors: ["David Weber"]));
+
+            Assert.Equal(path, book.PreferredPath);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void ScanAcceptsAnExactTitleFilenameWhenEmbeddedAuthorIsUnavailable()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        try
+        {
+            File.WriteAllText(Path.Combine(directory, "On Basilisk Station.epub"), "epub");
+            var metadata = new[]
+            {
+                new BookMetadata { Title = "On Basilisk Station", Authors = ["David Weber"] }
+            };
+
+            var book = Assert.Single(CalibreImporter.Scan(directory, selectedBooks: metadata));
+
+            Assert.False(book.IsPossibleMatch);
+            Assert.Equal("On Basilisk Station", book.Metadata?.Title);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void ScanFindsTitleWithinFilenameAndMarksUnverifiedMetadataAsPossible()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        try
+        {
+            var path = Path.Combine(directory, "David Weber - On Basilisk Station.epub");
+            File.WriteAllText(path, "epub");
+            var metadata = new[]
+            {
+                new BookMetadata { Title = "On Basilisk Station", Authors = ["David Weber"] }
+            };
+
+            var book = Assert.Single(CalibreImporter.Scan(directory, selectedBooks: metadata));
+
+            Assert.True(book.IsPossibleMatch);
+            Assert.Equal(path, book.PreferredPath);
         }
         finally
         {

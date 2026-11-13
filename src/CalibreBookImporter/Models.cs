@@ -10,7 +10,8 @@ public sealed record SourceBook(
     string Author,
     IReadOnlyList<string> SourcePaths,
     string PreferredPath,
-    BookMetadata? Metadata = null)
+    BookMetadata? Metadata = null,
+    bool IsPossibleMatch = false)
 {
     public string PreferredFormat => Path.GetExtension(PreferredPath).TrimStart('.').ToLowerInvariant();
 }
@@ -144,6 +145,14 @@ public static partial class BookMatching
 
     public static string NormalizeAuthor(string? author) =>
         Normalize(AuthorSuffixRegex().Replace(author ?? "", "").Trim());
+
+    public static bool ContainsSearchTerm(string? text, string? term)
+    {
+        var normalizedText = Normalize(text);
+        var normalizedTerm = Normalize(term);
+        return normalizedText.Length > 0 && normalizedTerm.Length > 0 &&
+               $" {normalizedText} ".Contains($" {normalizedTerm} ", StringComparison.Ordinal);
+    }
 
     public static string BuildGroupKey(string title, string? author = null)
     {

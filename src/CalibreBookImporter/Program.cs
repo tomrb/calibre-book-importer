@@ -82,7 +82,8 @@ internal static class Program
                             ? options.GetValues("title")
                             : metadata.Select(book => book.Title),
                         calibreDirectory,
-                        metadata);
+                        metadata,
+                        options.GetValues("author"));
                     WriteJson(books);
                     return 0;
                 }
@@ -190,7 +191,7 @@ internal static class Program
                 ["query", "title", "author", "genre", "subject", "keywords", "limit"],
                 StringComparer.OrdinalIgnoreCase),
             "scan" => new HashSet<string>(
-                ["source-dir", "title", "metadata-file"], StringComparer.OrdinalIgnoreCase),
+                ["source-dir", "title", "author", "metadata-file"], StringComparer.OrdinalIgnoreCase),
             "compare" => new HashSet<string>(
                 ["source-dir", "library-path", "title", "metadata-file"], StringComparer.OrdinalIgnoreCase),
             "import" or "update" => new HashSet<string>(
@@ -270,6 +271,7 @@ internal static class Program
                      ("FORMATS ADDED", actions.Count(action => action.Status == "format_added")),
                      ("REPLACED", actions.Count(action => action.Status == "replaced")),
                      ("NOT FOUND", actions.Count(action => action.Status == "missing")),
+                     ("POSSIBLE SOURCE MATCHES", actions.Count(action => action.Status == "possible_source_match")),
                      ("AMBIGUOUS / NEEDS REVIEW", actions.Count(action => action.Status == "ambiguous"))
                  })
         {
@@ -279,7 +281,7 @@ internal static class Program
 
     private static bool HasFailures(IEnumerable<BookAction> actions) =>
         actions.Any(action => action.Status is "failed" or "ambiguous" or "source_not_found" or
-            "missing" or "not_in_library");
+            "possible_source_match" or "missing" or "not_in_library");
 
     private static void PrintUsage()
     {
@@ -288,7 +290,8 @@ internal static class Program
 
             Usage:
               calibre-book-importer [--calibre-dir DIR] search --query QUERY [--limit N]
-              calibre-book-importer [--calibre-dir DIR] scan --source-dir DIR [--title TITLE] [--metadata-file FILE]
+              calibre-book-importer [--calibre-dir DIR] scan --source-dir DIR [--title TITLE] [--author AUTHOR]
+                  [--metadata-file FILE]
               calibre-book-importer [--calibre-dir DIR] compare --source-dir DIR --library-path DIR [--title TITLE]
                   [--metadata-file FILE]
               calibre-book-importer [--calibre-dir DIR] import|update --source-dir DIR --library-path DIR
